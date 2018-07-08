@@ -7,9 +7,17 @@ from sc2.constants import NEXUS, PROBE, PYLON, ASSIMILATOR, GATEWAY, \
     STARGATE, VOIDRAY, ROBOTICSFACILITY, TWILIGHTCOUNCIL
 import random
 
+# 165 iteration per minute depending on many things :)
+
 
 class ScapogoBot(sc2.BotAI):
+    def __init__(self):
+        self.ITERATIONS_PER_MINUTE = 165
+        self.MAX_WORKERS = 65
+        self.iteration = 0
+
     async def on_step(self, iteration):
+        self.iteration = iteration
         # what to do every step
         await self.distribute_workers()  # in sc2/bot_ai.py
         await self.build_workers()
@@ -24,9 +32,11 @@ class ScapogoBot(sc2.BotAI):
             await self.research()
 
     async def build_workers(self):
-        for nexus in self.units(NEXUS).ready.noqueue:
-            if self.can_afford(PROBE) and self.units(PROBE).amount < self.units(NEXUS).amount * 20:
-                await self.do(nexus.train(PROBE))
+        if self.units(NEXUS).amount * 16 > self.units(PROBE).amount:
+            if self.units(PROBE).amount < self.MAX_WORKERS:
+                for nexus in self.units(NEXUS).ready.noqueue:
+                    if self.can_afford(PROBE):
+                        await self.do(nexus.train(PROBE))
 
     async def build_pylons(self):
         if self.supply_left < 5 and not self.already_pending(PYLON) and self.can_afford(PYLON):
@@ -48,28 +58,32 @@ class ScapogoBot(sc2.BotAI):
                     await self.do(worker.build(ASSIMILATOR, vespene))
 
     async def expand(self):
-        mineral_number = self.state.mineral_field.amount
-
-        if (self.units(NEXUS).amount < 3 or mineral_number < 20) and self.can_afford(NEXUS):
-            await self.expand_now()
+        if self.units(NEXUS).amount < ((self.iteration / self.ITERATIONS_PER_MINUTE)/3) and self.can_afford(NEXUS):
+            if not self.already_pending(NEXUS):
+                await self.expand_now()
 
     async def offensive_force_buildings(self):
         if self.units(PYLON).ready.exists:
             pylon = self.units(PYLON).ready.random
+
             if self.units(GATEWAY).ready.exists and not self.units(CYBERNETICSCORE):
                 if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
                     await self.build(CYBERNETICSCORE, near=pylon)
-            elif len(self.units(GATEWAY)) < 3:
+
+            elif len(self.units(GATEWAY)) < ((self.iteration / self.ITERATIONS_PER_MINUTE)/4) and len(self.units(GATEWAY).ready.noqueue) == 0:
                 if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
                     await self.build(GATEWAY, near=pylon)
-            # elif len(self.units(GATEWAY)) == 3 and len(self.units(STARGATE)) < 1:
-            #     if self.can_afford(STARGATE) and not self.already_pending(STARGATE):
-            #         await  self.build(STARGATE, near=pylon)
+
+            if self.units(CYBERNETICSCORE).ready.exists and (self.iteration / self.ITERATIONS_PER_MINUTE) > 6 and len(self.units(STARGATE).ready.noqueue) == 0:
+                if len(self.units(STARGATE)) < ((self.iteration / self.ITERATIONS_PER_MINUTE)/4):
+                    if self.can_afford(STARGATE) and not self.already_pending(STARGATE):
+                        await  self.build(STARGATE, near=pylon)
 
     async def build_offensive_force(self):
         for gw in self.units(GATEWAY).ready.noqueue:
-            if self.can_afford(STALKER) and self.supply_left > 0:
-                await self.do(gw.train(STALKER))
+            if (not self.units(STALKER).amount > self.units(VOIDRAY).amount) or self.units(STALKER).amount < 15:
+                if self.can_afford(STALKER) and self.supply_left > 0:
+                    await self.do(gw.train(STALKER))
         for sg in self.units(STARGATE).ready.noqueue:
             if self.can_afford(VOIDRAY) and self.supply_left > 0:
                 await self.do(sg.train(VOIDRAY))
@@ -83,17 +97,23 @@ class ScapogoBot(sc2.BotAI):
             return self.enemy_start_locations[0]
 
     async def attack(self):
-        if self.units(STALKER).amount > 30:
-            for s in self.units(STALKER).idle:
-                await self.do(s.attack(self.find_target()))
-        elif self.units(STALKER).amount > 3:
-            for nexus in self.units(NEXUS).ready:
-                if len(self.known_enemy_units.closer_than(30, nexus)) > 0:
-                    for s in self.units(STALKER).idle:
-                        await self.do(s.attack(random.choice(self.known_enemy_units.closer_than(30, nexus))))
+        # {UNIT: [n to fight, n to defend]}
+        aggressive_units = {STALKER: [15, 3],
+                            VOIDRAY: [8, 3]}
+
+        for UNIT in aggressive_units:
+            if self.units(UNIT).amount > aggressive_units[UNIT][0] and self.units(UNIT).amount >\
+                    aggressive_units[UNIT][1]:
+                for s in self.units(UNIT).idle:
+                    await self.do(s.attack(self.find_target()))
+
+            elif self.units(UNIT).amount > aggressive_units[UNIT][1]:
+                if len(self.known_enemy_units) > 0:
+                    for s in self.units(UNIT).idle:
+                        await self.do(s.attack(random.choice(self.known_enemy_units)))
 
     async def research_buildings(self):
-        if self.units(PYLON).ready.exists:
+        if self.units(PYLON).ready.exists and (self.iteration / self.ITERATIONS_PER_MINUTE) > 6:
             pylon = self.units(PYLON).ready.random
             if self.units(GATEWAY).ready.exists:
                 if not self.units(FORGE):
@@ -105,21 +125,22 @@ class ScapogoBot(sc2.BotAI):
                         if self.can_afford(TWILIGHTCOUNCIL) and not self.already_pending(TWILIGHTCOUNCIL):
                             await self.build(TWILIGHTCOUNCIL, near=pylon)
 
-
     async def research(self):
-        # if self.units(FORGE).ready.exists:
-        #     frg = self.units(FORGE).ready.random
-        #     if self.can_afford(PROTOSSGROUNDWEAPONSLEVEL1):
-        #         await self.do(frg(FORGERESEARCH_PROTOSSGROUNDWEAPONSLEVEL1))
         if self.units(FORGE).ready.exists:
-            for frg in self.units(FORGE).idle:
+            for frg in self.units(STARGATE).ready.noqueue:
                 abilities = await self.get_available_abilities(frg)
                 for ability in abilities:
                     if self.can_afford(ability):
                         await self.do(frg(ability))
+        if self.units(CYBERNETICSCORE).ready.exists and self.units(VOIDRAY).amount > 3:
+            for cc in self.units(CYBERNETICSCORE).ready.noqueue:
+                abilities = await self.get_available_abilities(cc)
+                for ability in abilities:
+                    if self.can_afford(ability):
+                        await self.do(cc(ability))
 
 
 run_game(maps.get("AbyssalReefLE"), [
     Bot(Race.Protoss, ScapogoBot()),
-    Computer(Race.Terran, Difficulty.Medium)
+    Computer(Race.Terran, Difficulty.Hard)
     ], realtime=False)
